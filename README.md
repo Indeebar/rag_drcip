@@ -20,7 +20,7 @@ Built with **FastAPI + Qdrant Cloud + Groq** — designed to run on Render's fre
 │                                                     │
 │  POST /query                                        │
 │    │                                                │
-│    ├─ 1. Embed question  (all-MiniLM-L6-v2, CPU)   │
+│    ├─ 1. Embed question  (all-MiniLM-L6-v2, CPU)    │
 │    ├─ 2. Vector search   (Qdrant Cloud)             │
 │    ├─ 3. Score threshold check → abstain if low     │
 │    ├─ 4. Generate answer (Groq LLM)                 │
