@@ -5,6 +5,7 @@ qdrant-client==1.12.1
 groq==0.12.0
 pypdf==5.1.0
 pydantic-settings==2.6.1
+httpx==0.27.2
 # torch and torchvision are installed separately via CPU-only wheel index.
 # See Dockerfile and README — do NOT install the GPU build on Render (512 MB limit).
 # torch==2.4.1+cpu  → installed in Dockerfile via --index-url
