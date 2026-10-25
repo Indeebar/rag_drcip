@@ -1,48 +1,37 @@
-# ---------------------------------------------------------------------------
-# Secrets -- never commit these.
-# ---------------------------------------------------------------------------
+# Secrets — never commit
 .env
-.env.*
-!.env.example
-*.pem
-*.key
-secrets.json
 
-# ---------------------------------------------------------------------------
 # Python
-# ---------------------------------------------------------------------------
 __pycache__/
 *.py[cod]
-*$py.class
+*.pyo
 *.egg-info/
-build/
 dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
 .venv/
 venv/
-ENV/
 env/
 
-# ---------------------------------------------------------------------------
-# Tooling caches
-# ---------------------------------------------------------------------------
+# Testing
 .pytest_cache/
-.ruff_cache/
-.mypy_cache/
 .coverage
-coverage.xml
 htmlcov/
 
-# ---------------------------------------------------------------------------
-# Local / machine-specific artefacts
-# ---------------------------------------------------------------------------
-*.log
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# OS
 .DS_Store
 Thumbs.db
-.idea/
-.vscode/
 
-# ---------------------------------------------------------------------------
-# Corpus binaries: rights not established, so do not publish them.
-# Provenance notes live in corpus/README.md and are tracked.
-# ---------------------------------------------------------------------------
-corpus/*.pdf
+# HuggingFace model cache (large)
+.cache/
+
+# PDFs (don't commit source docs to git; store them separately)
+*.pdf

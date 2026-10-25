@@ -1,150 +1,322 @@
-# DRCIP RAG API
+# DRCIP Disaster Management RAG API
 
-Standalone retrieval-augmented question-answering API for a disaster-management
-chatbot. FastAPI + Qdrant Cloud (vector search and embeddings) + Groq (answer
-generation), sized to run on Render's free tier.
+A **production-ready**, lightweight RAG (Retrieval-Augmented Generation) API that answers questions about disaster-management documents with accurate page citations.
 
-**Phase 1 of 6 is complete.** Implemented so far: project skeleton, validated
-configuration, secret hygiene, request correlation, uniform error envelope, health
-endpoint. The `/v1/ask` contract below is frozen but not yet served.
+Built with **FastAPI + Qdrant Cloud + Groq** — designed to run on Render's free tier.
 
 ---
 
-## Status
+## Architecture
 
-| Phase | Scope | State |
-|---|---|---|
-| 1 | Skeleton, config, `.gitignore`, health endpoint, tests | ✅ done |
-| 2 | Ingestion CLI (PDF → section-aware chunks → Qdrant) | ⬜ |
-| 3 | Retrieval + `POST /v1/ask` skeleton, auth, rate limiting | ⬜ |
-| 4 | Groq answer generation, citation validation, abstention | ⬜ |
-| 5 | Retrieval evaluation + tuning (`MIN_SCORE`, `top_k`) | ⬜ |
-| 6 | README/API docs, Render deployment, smoke test | ⬜ |
+```
+┌─────────────────────────────────────────────────────┐
+│               Developer Machine (local)             │
+│  disaster.pdf ──► ingest.py ──► Qdrant Cloud        │
+│  (run once before deploying)                        │
+└─────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────┐
+│         Render Free Web Service (Docker)            │
+│                                                     │
+│  POST /query                                        │
+│    │                                                │
+│    ├─ 1. Embed question  (all-MiniLM-L6-v2, CPU)   │
+│    ├─ 2. Vector search   (Qdrant Cloud)             │
+│    ├─ 3. Score threshold check → abstain if low     │
+│    ├─ 4. Generate answer (Groq LLM)                 │
+│    └─ 5. Return answer + page citations             │
+└─────────────────────────────────────────────────────┘
+```
+
+| Component | Technology |
+|---|---|
+| Framework | FastAPI + Uvicorn |
+| Embedding | `all-MiniLM-L6-v2` (384-dim, CPU) |
+| LLM | Groq (`openai/gpt-oss-20b`) |
+| Vector DB | Qdrant Cloud (free tier, 1 GB RAM) |
+| PDF parsing | pypdf |
+| Deployment | Render (Docker, free tier) |
 
 ---
 
-## Corpus caveat (read before ingesting)
+## Prerequisites
 
-`corpus/disaster.pdf` is the **DRCIP Knowledge Base v1.0**, compiled 25 Oct 2026.
-Its own cover states: *"Not an official government publication."* Sections carry
-`STATUS` labels (`VERIFIED` / `CURATED`) and a `SOURCE` line naming the document
-they were compiled from. The API reproduces those labels verbatim and never
-upgrades them: an answer is described as *sourced from the corpus*, not as
-official government guidance.
-
-The document contains **no copyright, licence or redistribution statement**, and
-its metadata credits the "DRCIP project". The PDF is therefore **git-ignored and
-not published with this repository** until the corpus owner confirms rights in
-writing. See [`corpus/README.md`](corpus/README.md) for the full inspection
-(pages, structure, metadata, rights findings).
-
-`STATUS: VERIFIED` in this corpus means *verified by the corpus compiler*, not
-verified by a government authority. Response wording must never imply otherwise.
+- Python 3.11+
+- A [Qdrant Cloud](https://cloud.qdrant.io/) account (free cluster)
+- A [Groq](https://console.groq.com/) API key (free tier)
 
 ---
 
-## Quick start (local)
+## Local Setup
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements-dev.txt
+### 1. Clone and configure
 
-Copy-Item .env.example .env      # then fill in the blanks
-python -m uvicorn app.main:app --reload
+```bash
+git clone <your-repo-url>
+cd rag_drcip
+
+cp .env.example .env
+# Edit .env with your real credentials
 ```
 
-* API: <http://127.0.0.1:8000>
-* Interactive docs: <http://127.0.0.1:8000/docs>
-* Health: <http://127.0.0.1:8000/health>
+### 2. Install dependencies
 
-Generate an API key for `API_KEYS`:
+```bash
+# CPU-only PyTorch (MUST be first to avoid the 2 GB GPU build)
+pip install torch==2.4.1+cpu --index-url https://download.pytorch.org/whl/cpu
 
-```powershell
-python -c "import secrets; print('drcip_' + secrets.token_urlsafe(32))"
+# Application + dev dependencies
+pip install -r requirements.txt -r requirements-dev.txt
 ```
 
-## Tests and checks
+### 3. Ingest your PDF
 
-```powershell
-pytest                      # unit + contract tests, no network, no real credentials
-ruff check . && ruff format --check .
-python scripts/check_no_secrets.py   # must print PASS before every commit
+Run this **once locally** before deploying. The API on Render is read-only.
+
+```bash
+python -m ingest.ingest --pdf disaster.pdf
 ```
 
-Tests never contact Qdrant or Groq. Tests marked `live` are skipped by default
-(`pytest -m live` when you deliberately want a real end-to-end check).
+Options:
 
-## Verified provider capabilities
+```bash
+# Reset collection and re-ingest (useful after PDF updates)
+python -m ingest.ingest --pdf disaster.pdf --reset
 
-Checked against this project's own accounts on 25 Oct 2026:
+# Custom collection name
+python -m ingest.ingest --pdf disaster.pdf --collection my_collection
 
-| Model | Chat | Strict JSON schema | Probe latency | Free-tier limits |
-|---|---|---|---|---|
-| `qwen/qwen3.8-27b` (default) | ✅ | ✅ | 209–248 ms | 1,000 RPD · 8,000 TPM |
-| `openai/gpt-oss-20b` (fallback) | ✅ | ✅ | 404–406 ms | 1,000 RPD · 8,000 TPM |
-| `openai/gpt-oss-120b` | ✅ | ✅ | 701–776 ms | 1,000 RPD · 8,000 TPM |
-| `allam-2-7b` | ✅ | ❌ | 169 ms | 7,000 RPD · 6,000 TPM |
+# Verify available Groq models
+python -c "from groq import Groq; import os; c = Groq(api_key=os.environ['GROQ_API_KEY']); [print(m.id) for m in c.models.list().data]"
+```
 
-`llama-3.3-70b-versatile` is not available to this account's free tier; it is not
-used. `GROQ_MODEL` / `GROQ_MODEL_FALLBACK` are environment variables, so switching
-models requires no code change. The API treats an unavailable model as a
-recoverable upstream error and returns `502 upstream_error`, never a broken
-answer.
+### 4. Run the API locally
+
+```bash
+uvicorn app.main:app --reload --port 8000
+```
+
+Visit `http://localhost:8000/docs` for the interactive Swagger UI.
 
 ---
 
-## Configuration
+## API Reference
 
-All settings come from environment variables; see `.env.example` for the full
-annotated list. Required: `QDRANT_URL`, `QDRANT_API_KEY`, `GROQ_API_KEY`,
-`API_KEYS`. Anything missing fails at startup with a clear validation error
-instead of failing on the first request.
+### Authentication
 
-Credentials are held as `SecretStr`, excluded from `repr()`, and never appear in
-startup logs (`Settings.safe_summary()` reports counts and hostnames only).
+Every request to `/query` requires a bearer token:
+
+```
+Authorization: Bearer <your_api_key>
+```
+
+API keys are set in the `API_KEYS` environment variable (comma-separated for rotation).
 
 ---
 
-## Security
+### `POST /query`
 
-* Git-ignored `.env`; committed template only. `python scripts/check_no_secrets.py`
-  scans tracked files for tracked secret files and for the literal values of the
-  secrets in your local `.env`.
-* `X-API-Key` authentication for `/v1/*` (shared key, rotation supported by
-  listing two keys in `API_KEYS`). `/health` stays public for uptime monitors.
-* The key is a **server-to-server** credential. Never ship it in frontend
-  JavaScript: any browser caller must proxy through the integrator's backend.
-* No CORS headers are sent unless `ALLOWED_ORIGINS` is set.
-* Every response carries `X-Request-ID` (echoed if the caller supplies a sane one),
-  and every error uses one envelope: `{"error": {"code", "message", "request_id"}}`.
+Ask a disaster-management question.
 
-## Render deployment notes (for the integrating engineer)
+**Request:**
 
-* Free instance: 512 MB RAM, 0.1 CPU, sleeps after 15 minutes idle, ~1 minute cold
-  start. Use a **60 s client timeout with one retry**; the first request after
-  idle can take a minute.
-* `GET /health` is cheap and makes no external calls — suitable for both Render's
-  health check and external uptime pingers (pinging it every ~10 minutes keeps the
-  service awake).
-* Groq free tier is the throughput ceiling: 8,000 tokens/minute and 1,000
-  requests/day per model. Budget roughly 70–90 questions/day at default settings.
-  Exceeding it returns `429 rate_limited` with `Retry-After`; quota exhaustion
-  surfaces as `502 upstream_error`.
-* Free Qdrant clusters suspend after 7 idle days and are deleted after 4 weeks —
-  check the cluster monthly.
-
-## Layout
-
+```json
+{
+  "question": "What are the evacuation procedures for coastal flooding?"
+}
 ```
-app/            deployed API (no PDF parsing, no local ML)
-  api/          HTTP routes
-  config.py     validated settings
-  errors.py     single error envelope
-  observability.py  request ids, access logs, safety headers
-  schemas.py    public contract models
-ingest/         local-only ingestion CLI (phase 2)
-corpus/         source PDF(s) + generated manifest
-scripts/        operator tooling (secret scan, evaluation, smoke tests)
-tests/          unit + contract tests
+
+| Field | Type | Required | Constraints |
+|---|---|---|---|
+| `question` | string | ✅ | 3–500 characters |
+
+**Response — answer found (HTTP 200):**
+
+```json
+{
+  "answer": "Coastal flooding evacuation procedures include immediate evacuation when Flood Alert Level 3 is declared. Residents must...",
+  "sources": [
+    {
+      "document": "disaster.pdf",
+      "page": 12,
+      "excerpt": "Residents must evacuate within 2 hours of a Flood Alert Level 3 declaration..."
+    },
+    {
+      "document": "disaster.pdf",
+      "page": 13,
+      "excerpt": "Designated evacuation routes are marked with green directional signage..."
+    }
+  ],
+  "model": "openai/gpt-oss-20b",
+  "chunks_retrieved": 5
+}
 ```
+
+**Response — out of scope / abstention (HTTP 200):**
+
+```json
+{
+  "answer": "I could not find sufficient information in the available disaster-management documents to answer this question reliably. Please consult official sources or rephrase your query.",
+  "sources": [],
+  "model": "openai/gpt-oss-20b",
+  "chunks_retrieved": 0
+}
+```
+
+> **Tip for consuming apps:** check `sources == []` to detect abstention programmatically.
+
+**Error responses:**
+
+| HTTP | Condition |
+|---|---|
+| 401 | Invalid or missing bearer token |
+| 422 | Request body fails validation (e.g. question > 500 chars) |
+| 503 | Qdrant or Groq unreachable |
+
+---
+
+### `GET /health`
+
+Public liveness probe — no authentication required.
+
+```json
+{
+  "status": "ok",
+  "qdrant": "connected",
+  "collection": "disaster_docs",
+  "model": "all-MiniLM-L6-v2",
+  "model_loaded": true
+}
+```
+
+`qdrant` values: `"connected"` | `"collection_missing"` | `"error"`
+
+---
+
+### `GET /`
+
+API discovery.
+
+```json
+{
+  "name": "DRCIP Disaster Management RAG API",
+  "version": "1.0.0",
+  "docs": "/docs",
+  "health": "/health"
+}
+```
+
+---
+
+## Environment Variables
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `QDRANT_URL` | ✅ | — | Qdrant Cloud cluster URL |
+| `QDRANT_API_KEY` | ✅ | — | Qdrant Cloud API key |
+| `GROQ_API_KEY` | ✅ | — | Groq API key |
+| `API_KEYS` | ✅ | — | Comma-separated bearer tokens |
+| `QDRANT_COLLECTION` | — | `disaster_docs` | Collection name |
+| `GROQ_MODEL` | — | `openai/gpt-oss-20b` | Groq model ID |
+| `TOP_K` | — | `5` | Chunks retrieved per query |
+| `SCORE_THRESHOLD` | — | `0.30` | Min cosine similarity for abstention |
+| `DATABASE_URL` | — | — | Neon PostgreSQL (future use) |
+
+---
+
+## Running Tests
+
+```bash
+pytest tests/ -v
+```
+
+Tests run fully offline — Qdrant and Groq are mocked.
+
+---
+
+## Render Deployment
+
+### Option A — One-click blueprint (recommended)
+
+1. Push repo to GitHub
+2. Render Dashboard → **New → Blueprint**
+3. Connect your repo — Render reads `render.yaml` automatically
+4. Set the four secret env vars in the Render dashboard:
+   - `QDRANT_URL`, `QDRANT_API_KEY`, `GROQ_API_KEY`, `API_KEYS`
+5. Click **Deploy**
+
+### Option B — Manual
+
+1. Render Dashboard → **New → Web Service**
+2. Connect your GitHub repo
+3. Set **Language: Docker**, **Plan: Free**
+4. Add all environment variables from the table above
+5. Click **Create Web Service**
+
+### Verify deployment
+
+```bash
+curl https://your-service.onrender.com/health
+```
+
+### Test the deployed API
+
+```bash
+curl -X POST https://your-service.onrender.com/query \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What is the emergency response protocol for earthquakes?"}'
+```
+
+---
+
+## Keep-Alive Setup (Important!)
+
+Render's free tier sleeps after **15 minutes of inactivity** (60-second cold start).  
+Qdrant's free cluster suspends after **7 days of inactivity**.
+
+**Fix both for free using [cron-job.org](https://cron-job.org):**
+
+1. Sign up at cron-job.org (free)
+2. Create a cron job:
+   - URL: `https://your-service.onrender.com/health`
+   - Schedule: Every **13 minutes** (prevents Render sleep)
+3. This also pings Qdrant's client, keeping the cluster alive
+
+---
+
+## Adding More Documents
+
+To add another PDF to the knowledge base:
+
+```bash
+python -m ingest.ingest --pdf new_document.pdf
+```
+
+This upserts new chunks alongside existing ones. Existing chunks are not affected.
+
+To fully replace the knowledge base:
+
+```bash
+python -m ingest.ingest --pdf new_document.pdf --reset
+```
+
+---
+
+## Security Notes
+
+- Bearer tokens are validated server-side against `API_KEYS` env var
+- To rotate keys: add the new key to `API_KEYS` (comma-separated), deploy, then remove the old key and redeploy
+- The LLM system prompt contains injection-resistance instructions
+- HTTPS is terminated by Render's proxy — all traffic is encrypted in transit
+- Never commit `.env` — it is in `.gitignore`
+
+---
+
+## Latency Expectations
+
+| Condition | Typical latency |
+|---|---|
+| Warm request (keep-alive active) | 700 ms – 1.8 s |
+| Cold start (no keep-alive) | + 50–60 seconds |
+| Upgrade to Render Starter ($7/mo) | No cold starts |

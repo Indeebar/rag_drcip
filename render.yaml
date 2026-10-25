@@ -1,0 +1,27 @@
+# render.yaml — Infrastructure-as-code for Render
+# Push this to GitHub and import in Render dashboard to configure in one click.
+# See: https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: drcip-rag-api
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: QDRANT_URL
+        sync: false          # Set manually in Render dashboard
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: API_KEYS
+        sync: false
+      - key: QDRANT_COLLECTION
+        value: disaster_docs
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-20b
+      - key: TOP_K
+        value: "5"
+      - key: SCORE_THRESHOLD
+        value: "0.30"

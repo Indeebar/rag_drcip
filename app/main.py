@@ -1,79 +1,119 @@
-"""FastAPI application factory.
-
-Importing this module builds the default app, so a missing or invalid environment
-fails at boot (loudly, once) instead of on the first user request. Tests build
-isolated instances through :func:`create_app` with explicit settings.
 """
+FastAPI application entry point.
 
+Startup sequence (lifespan):
+  1. Pre-load embedding model into RAM once (avoids slow first request).
+  2. Initialise Qdrant and Groq clients (cached via lru_cache).
+
+Routes:
+  GET  /          — API info
+  GET  /health    — liveness probe (no auth; used by Render & keep-alive cron)
+  POST /query     — RAG question answering (bearer auth required)
+  GET  /docs      — Interactive Swagger UI (auto-generated)
+"""
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from qdrant_client import QdrantClient
 
-from app.api import health
-from app.config import Settings, get_settings
-from app.errors import install_error_handlers
-from app.observability import RequestContextMiddleware, configure_logging
+from app.dependencies import get_groq_client, get_qdrant_client, get_settings
+from app.routers import query
+from app.services.embedder import preload
 
-__version__ = "1.0.0"
-
-logger = logging.getLogger("drcip.startup")
-
-DESCRIPTION = """
-Retrieval-augmented question answering over a disaster-management reference
-corpus. Answers are grounded in retrieved passages and always carry citations;
-when the corpus does not support an answer the API abstains instead of guessing.
-
-**Authentication:** send `X-API-Key` on every `/v1/*` request.
-`/health` is public so uptime monitors can reach it.
-""".strip()
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
-    settings = settings or get_settings()
-    configure_logging(settings.log_level)
+# ── Startup / shutdown ────────────────────────────────────────────────────────
 
-    app = FastAPI(
-        title="DRCIP RAG API",
-        version=settings.api_version,
-        description=DESCRIPTION,
-        docs_url="/docs" if settings.docs_enabled else None,
-        redoc_url=None,
-        openapi_url="/openapi.json" if settings.docs_enabled else None,
-        contact={"name": "DRCIP RAG API"},
-        license_info={"name": "Proprietary"},
-    )
+@asynccontextmanager
+async def lifespan(app: FastAPI):  # noqa: ARG001
+    logger.info("── Startup ──────────────────────────────────────────")
 
-    # Route handlers resolve settings through this dependency, so tests (and any
-    # future multi-tenant variant) can supply a different instance.
-    app.state.settings = settings
-    app.dependency_overrides[get_settings] = lambda: settings
+    logger.info("Loading embedding model (all-MiniLM-L6-v2)…")
+    preload()
+    logger.info("Embedding model ready.")
 
-    app.add_middleware(RequestContextMiddleware)
+    logger.info("Initialising Qdrant client…")
+    get_qdrant_client()
+    logger.info("Qdrant client ready.")
 
-    if settings.allowed_origin_list:
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=settings.allowed_origin_list,
-            allow_credentials=False,
-            allow_methods=["POST", "GET"],
-            allow_headers=["Content-Type", "X-API-Key", "X-Request-ID"],
-            expose_headers=["X-Request-ID", "X-Response-Time-Ms"],
-        )
+    logger.info("Initialising Groq client…")
+    get_groq_client()
+    logger.info("Groq client ready.")
 
-    install_error_handlers(app)
-    app.include_router(health.router)
+    logger.info("All services up — API is accepting requests.")
+    logger.info("─────────────────────────────────────────────────────")
 
-    logger.info("startup %s", settings.safe_summary())
-    if settings.embed_backend == "local" and settings.env == "production":
-        logger.warning(
-            "EMBED_BACKEND=local in production: a local embedding model may exceed "
-            "Render's 512 MB free-tier memory. Prefer 'qdrant_cloud'."
-        )
+    yield  # ── application runs ──
 
-    return app
+    logger.info("── Shutdown ─────────────────────────────────────────")
 
 
-app = create_app()
+# ── App factory ───────────────────────────────────────────────────────────────
+
+app = FastAPI(
+    title="DRCIP Disaster Management RAG API",
+    version="1.0.0",
+    description=(
+        "RAG-powered Q&A API for disaster-management documents. "
+        "Send a question, receive a grounded answer with page citations."
+    ),
+    lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
+
+# CORS — open for public consumption; restrict origins in production if needed
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type"],
+)
+
+app.include_router(query.router, tags=["Query"])
+
+
+# ── Meta endpoints ────────────────────────────────────────────────────────────
+
+@app.get("/", tags=["Meta"], summary="API info")
+def root():
+    return {
+        "name": "DRCIP Disaster Management RAG API",
+        "version": "1.0.0",
+        "docs": "/docs",
+        "health": "/health",
+    }
+
+
+@app.get("/health", tags=["Meta"], summary="Liveness probe")
+def health(qdrant: QdrantClient = Depends(get_qdrant_client)):
+    """
+    Public liveness endpoint — no authentication required.
+    Hit this every ~13 minutes to prevent Render cold starts and
+    every ~6 days to keep the Qdrant free cluster from sleeping.
+    """
+    settings = get_settings()
+    qdrant_status = "unknown"
+    try:
+        exists = qdrant.collection_exists(settings.qdrant_collection)
+        qdrant_status = "connected" if exists else "collection_missing"
+    except Exception as exc:
+        logger.warning("Qdrant health check failed: %s", exc)
+        qdrant_status = "error"
+
+    return {
+        "status": "ok",
+        "qdrant": qdrant_status,
+        "collection": settings.qdrant_collection,
+        "model": "all-MiniLM-L6-v2",
+        "model_loaded": True,
+    }
