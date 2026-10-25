@@ -1,0 +1,11 @@
+# Runtime dependencies for the deployed API.
+# Deliberately small: no torch / transformers / langchain. Nothing here loads an
+# embedding model locally -- embeddings are produced by Qdrant Cloud Inference.
+fastapi>=0.162,<0.163
+uvicorn[standard]>=0.54,<0.55
+qdrant-client>=1.20,<1.21
+groq>=1.7,<2.0
+pydantic>=2.14,<3.0
+pydantic-settings>=2.16,<3.0
+httpx>=0.28,<0.29
+slowapi>=0.1.10,<0.2

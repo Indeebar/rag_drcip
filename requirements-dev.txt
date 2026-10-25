@@ -1,0 +1,4 @@
+# Local development / CI only. Never installed in the Render image.
+-r requirements.txt
+pytest>=9.1,<10.0
+ruff>=0.17,<0.18

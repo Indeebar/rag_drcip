@@ -1,0 +1,9 @@
+# Normalise line endings so a Windows checkout and the Linux deploy target agree.
+* text=auto
+*.py text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.txt text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.pdf binary
